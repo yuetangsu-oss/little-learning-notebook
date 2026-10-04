@@ -16,6 +16,8 @@ describe('学习小本', () => {
     expect(screen.getByRole('button', { name: /中文/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /英文/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /数学/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /导出备份/ })).toBeInTheDocument()
+    expect(screen.getByText(/导入恢复/)).toBeInTheDocument()
   })
 
   it('拒绝非法数学输入', async () => {

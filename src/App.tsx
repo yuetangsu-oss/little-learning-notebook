@@ -5,16 +5,20 @@ import {
   CalendarDays,
   Check,
   ChevronRight,
+  Download,
   Languages,
   MoreHorizontal,
   Plus,
   Search,
+  ShieldAlert,
+  ShieldCheck,
   Sigma,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react'
-import { deleteRecord, getAllRecords, isDuplicate, primaryValue, saveRecord } from './db'
+import { createBackup, deleteRecord, getAllRecords, isDuplicate, mergeBackup, parseBackup, primaryValue, saveRecord } from './db'
 import type { Category, DraftRecord, LearningRecord } from './types'
 
 const categoryMeta = {
@@ -44,10 +48,19 @@ export default function App() {
   const [deleteTarget, setDeleteTarget] = useState<LearningRecord | null>(null)
   const [showNotice, setShowNotice] = useState(() => localStorage.getItem('storage-notice-seen') !== 'yes')
   const [loading, setLoading] = useState(true)
+  const [storagePersisted, setStoragePersisted] = useState<boolean | null>(null)
+  const [message, setMessage] = useState('')
 
   useEffect(() => {
     getAllRecords().then(setRecords).finally(() => setLoading(false))
+    requestPersistentStorage().then(setStoragePersisted)
   }, [])
+
+  useEffect(() => {
+    if (!message) return
+    const timer = window.setTimeout(() => setMessage(''), 4200)
+    return () => window.clearTimeout(timer)
+  }, [message])
 
   const filteredRecords = useMemo(() => {
     if (!activeCategory) return []
@@ -91,6 +104,37 @@ export default function App() {
     setMenuId(null)
   }
 
+  function handleExport() {
+    const backup = createBackup(records)
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `学习小本备份-${new Date().toISOString().slice(0, 10)}.json`
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    const now = new Date().toISOString()
+    localStorage.setItem('last-backup-at', now)
+    setMessage(`备份成功，共保存 ${records.length} 条记录`)
+  }
+
+  async function handleImport(file: File) {
+    try {
+      const backup = parseBackup(JSON.parse(await file.text()))
+      const result = await mergeBackup(records, backup.records)
+      setRecords(result.records)
+      setMessage(`恢复完成：新增 ${result.added} 条，跳过 ${result.skipped} 条重复记录`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '无法读取这个备份文件')
+    }
+  }
+
+  async function handlePersistenceRetry() {
+    const result = await requestPersistentStorage()
+    setStoragePersisted(result)
+    setMessage(result ? '浏览器已允许持久保存' : '浏览器暂未授予持久保存，请定期导出备份')
+  }
+
   if (loading) {
     return <main className="app-shell loading-screen">正在打开学习小本…</main>
   }
@@ -99,7 +143,14 @@ export default function App() {
     <div className="app-shell">
       <div className="paper-grain" />
       {!activeCategory ? (
-        <Home records={records} onOpen={enterCategory} />
+        <Home
+          records={records}
+          onOpen={enterCategory}
+          onExport={handleExport}
+          onImport={handleImport}
+          storagePersisted={storagePersisted}
+          onPersistenceRetry={handlePersistenceRetry}
+        />
       ) : (
         <CategoryPage
           category={activeCategory}
@@ -137,7 +188,7 @@ export default function App() {
           <section className="notice-card" role="dialog" aria-modal="true" aria-labelledby="notice-title">
             <div className="notice-icon"><Sparkles size={22} /></div>
             <h2 id="notice-title">欢迎使用学习小本</h2>
-            <p>所有记录只保存在这台设备上。清除浏览器数据或更换手机后，记录将无法恢复。</p>
+            <p>记录默认只保存在这台设备上。请定期在首页导出备份，清除浏览器数据或换手机后可用备份恢复。</p>
             <button
               className="primary-button"
               onClick={() => {
@@ -150,11 +201,20 @@ export default function App() {
           </section>
         </div>
       )}
+      {message && <div className="toast" role="status">{message}</div>}
     </div>
   )
 }
 
-function Home({ records, onOpen }: { records: LearningRecord[]; onOpen: (category: Category) => void }) {
+function Home({ records, onOpen, onExport, onImport, storagePersisted, onPersistenceRetry }: {
+  records: LearningRecord[]
+  onOpen: (category: Category) => void
+  onExport: () => void
+  onImport: (file: File) => Promise<void>
+  storagePersisted: boolean | null
+  onPersistenceRetry: () => void
+}) {
+  const lastBackup = localStorage.getItem('last-backup-at')
   return (
     <main className="home-page">
       <header className="home-header">
@@ -181,9 +241,37 @@ function Home({ records, onOpen }: { records: LearningRecord[]; onOpen: (categor
         })}
       </section>
 
+      <section className="backup-panel" aria-labelledby="backup-title">
+        <div className="backup-heading">
+          <div>
+            <span className="backup-kicker">数据安全</span>
+            <h2 id="backup-title">备份与恢复</h2>
+          </div>
+          <span className={`storage-status ${storagePersisted ? 'safe' : ''}`}>
+            {storagePersisted ? <ShieldCheck size={15} /> : <ShieldAlert size={15} />}
+            {storagePersisted ? '持久保存' : '本机存储'}
+          </span>
+        </div>
+        <p className="backup-description">备份文件可以保存到网盘、微信文件或电脑，换手机后也能恢复。</p>
+        <div className="backup-actions">
+          <button onClick={onExport}><Download size={18} />导出备份</button>
+          <label className="import-button"><Upload size={18} />导入恢复<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onImport(file); event.target.value = '' }} /></label>
+        </div>
+        <div className="backup-foot">
+          <span>{lastBackup ? `最近备份：${formatDate(lastBackup)}` : '尚未导出过备份'}</span>
+          {!storagePersisted && <button onClick={onPersistenceRetry}>重新申请持久保存</button>}
+        </div>
+      </section>
+
       <footer className="home-footer"><span />每天认识一点点，慢慢长成大大的世界<span /></footer>
     </main>
   )
+}
+
+async function requestPersistentStorage(): Promise<boolean> {
+  if (!navigator.storage?.persisted || !navigator.storage?.persist) return false
+  if (await navigator.storage.persisted()) return true
+  return navigator.storage.persist()
 }
 
 interface CategoryPageProps {

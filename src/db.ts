@@ -33,6 +33,69 @@ export async function deleteRecord(id: string): Promise<void> {
   await (await database).delete('records', id)
 }
 
+export interface BackupFile {
+  app: 'little-learning-notebook'
+  version: 1
+  exportedAt: string
+  records: LearningRecord[]
+}
+
+export function createBackup(records: LearningRecord[]): BackupFile {
+  return {
+    app: 'little-learning-notebook',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    records,
+  }
+}
+
+export function parseBackup(value: unknown): BackupFile {
+  if (!value || typeof value !== 'object') throw new Error('备份文件格式不正确')
+  const candidate = value as Partial<BackupFile>
+  if (candidate.app !== 'little-learning-notebook' || candidate.version !== 1 || !Array.isArray(candidate.records)) {
+    throw new Error('这不是学习小本的有效备份文件')
+  }
+  if (!candidate.records.every(isValidRecord)) throw new Error('备份文件中包含无法识别的记录')
+  return candidate as BackupFile
+}
+
+export async function mergeBackup(
+  current: LearningRecord[],
+  imported: LearningRecord[],
+): Promise<{ records: LearningRecord[]; added: number; skipped: number }> {
+  const merged = [...current]
+  const db = await database
+  let added = 0
+  let skipped = 0
+
+  for (const record of imported) {
+    if (isDuplicate(merged, record.category, primaryValue(record))) {
+      skipped += 1
+      continue
+    }
+    const safeRecord = { ...record, id: crypto.randomUUID() }
+    await db.put('records', safeRecord)
+    merged.push(safeRecord)
+    added += 1
+  }
+
+  return {
+    records: merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    added,
+    skipped,
+  }
+}
+
+function isValidRecord(value: unknown): value is LearningRecord {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<LearningRecord>
+  if (typeof record.id !== 'string' || typeof record.createdAt !== 'string' || typeof record.updatedAt !== 'string') return false
+  if (record.category === 'chinese') return typeof record.text === 'string' && typeof record.pinyin === 'string' && typeof record.note === 'string'
+  if (record.category === 'english') return typeof record.term === 'string' && typeof record.meaning === 'string' && typeof record.example === 'string'
+  if (record.category === 'math') return typeof record.numeral === 'string' && /^\d+$/.test(record.numeral)
+  return false
+}
+
 export function primaryValue(record: LearningRecord): string {
   if (record.category === 'chinese') return record.text
   if (record.category === 'english') return record.term
